@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/libopenstorage/openstorage/pkg/auth"
 )
 
 const (
@@ -182,7 +184,7 @@ func (r *Request) URL() *url.URL {
 		p = path.Join(p, strings.ToLower(r.version))
 	}
 	if len(r.resource) != 0 {
-		p = path.Join(p, strings.ToLower(r.resource))
+		p = path.Join(p, r.resource)
 		if len(r.instance) != 0 {
 			p = path.Join(p, r.instance)
 		}
@@ -230,7 +232,6 @@ func parseHTTPStatus(resp *http.Response, body []byte) error {
 }
 
 // Do executes the request and returns a Response.
-// Do executes the request and returns a Response.
 func (r *Request) Do() *Response {
 	var (
 		err  error
@@ -257,7 +258,11 @@ func (r *Request) Do() *Response {
 	req.Header.Set("Date", time.Now().String())
 
 	if len(r.authstring) > 0 {
-		req.Header.Set("Authorization", "Basic "+r.authstring)
+		if auth.IsJwtToken(r.authstring) {
+			req.Header.Set("Authorization", "bearer "+r.authstring)
+		} else {
+			req.Header.Set("Authorization", "Basic "+r.authstring)
+		}
 	}
 
 	if len(r.accesstoken) > 0 {
@@ -265,6 +270,7 @@ func (r *Request) Do() *Response {
 	}
 
 	start := time.Now()
+	attemptNum := 0
 	for {
 		if resp, err = r.client.Do(req); err != nil {
 			return &Response{err: err}
@@ -272,10 +278,10 @@ func (r *Request) Do() *Response {
 
 		if time.Since(start) >= maxRetryDuration ||
 			resp.StatusCode != http.StatusServiceUnavailable {
-			// Server needs to set this header along with returning a 503
 			break
 		}
-		handleServiceUnavailable(resp)
+		attemptNum++
+		handleServiceUnavailable(resp, attemptNum)
 	}
 
 	if resp.Body != nil {
@@ -293,13 +299,15 @@ func (r *Request) Do() *Response {
 	}
 }
 
-func handleServiceUnavailable(resp *http.Response) {
+func handleServiceUnavailable(resp *http.Response, attemptNum int) {
 	var duration = time.Duration(1 * time.Second)
 	if len(resp.Header["Retry-After"]) > 0 {
 		if retryafter, err := strconv.Atoi(resp.Header["Retry-After"][0]); err == nil {
-			duration = time.Duration(retryafter) * time.Second
+			duration = time.Duration(retryafter*attemptNum) * time.Second
 		}
 	}
+	// Close body so go-routines can spin down.
+	resp.Body.Close()
 
 	time.Sleep(duration)
 }
@@ -332,7 +340,7 @@ func (r Response) FormatError() error {
 	if len(r.body) == 0 {
 		return fmt.Errorf("Error: %v", r.err)
 	}
-	return fmt.Errorf("HTTP-%d: %s", r.statusCode, string(r.body))
+	return fmt.Errorf("%v", strings.TrimSpace(string(r.body)))
 }
 
 func digest(method string, path string) string {

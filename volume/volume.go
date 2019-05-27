@@ -36,6 +36,10 @@ var (
 	ErrNotSupported = errors.New("Operation not supported")
 	// ErrVolBusy returned when volume is in busy state
 	ErrVolBusy = errors.New("Volume is busy")
+	// ErrAborted returned when capacityUsageInfo cannot be returned
+	ErrAborted = errors.New("Aborted CapacityUsage request")
+	// ErrInvalidName returned when Cloudbackup Name/request is invalid
+	ErrInvalidName = errors.New("Invalid name for cloud backup/restore request")
 )
 
 // Constants used by the VolumeDriver
@@ -104,8 +108,11 @@ type SnapshotDriver interface {
 	Snapshot(volumeID string, readonly bool, locator *api.VolumeLocator, noRetry bool) (string, error)
 	// Restore restores volume to specified snapshot.
 	Restore(volumeID string, snapshotID string) error
-	// GroupSnapshot takes a snapshot of specified volumegroup.
-	SnapshotGroup(groupID string, labels map[string]string) (*api.GroupSnapCreateResponse, error)
+	// SnapshotGroup takes a snapshot of a group of volumes that can be specified with either of the following
+	//	1. group ID
+	//	2. labels
+	//	3. volumeIDs
+	SnapshotGroup(groupID string, labels map[string]string, volumeIDs []string) (*api.GroupSnapCreateResponse, error)
 }
 
 // StatsDriver interface provides stats features
@@ -120,6 +127,9 @@ type StatsDriver interface {
 	UsedSize(volumeID string) (uint64, error)
 	// GetActiveRequests get active requests
 	GetActiveRequests() (*api.ActiveRequests, error)
+	// CapacityUsage returns both exclusive and shared usage
+	// of a snap/volume
+	CapacityUsage(ID string) (*api.CapacityUsageResponse, error)
 }
 
 type QuiesceDriver interface {
@@ -135,9 +145,9 @@ type QuiesceDriver interface {
 // CloudBackupDriver interface provides Cloud backup features
 type CloudBackupDriver interface {
 	// CloudBackupCreate uploads snapshot of a volume to the cloud
-	CloudBackupCreate(input *api.CloudBackupCreateRequest) error
+	CloudBackupCreate(input *api.CloudBackupCreateRequest) (*api.CloudBackupCreateResponse, error)
 	// CloudBackupGroupCreate creates and then uploads volumegroup snapshots
-	CloudBackupGroupCreate(input *api.CloudBackupGroupCreateRequest) error
+	CloudBackupGroupCreate(input *api.CloudBackupGroupCreateRequest) (*api.CloudBackupGroupCreateResponse, error)
 	// CloudBackupRestore downloads a cloud backup and restores it to a volume
 	CloudBackupRestore(input *api.CloudBackupRestoreRequest) (*api.CloudBackupRestoreResponse, error)
 	// CloudBackupEnumerate enumerates the backups for a given cluster/credential/volumeID
@@ -167,11 +177,11 @@ type CloudBackupDriver interface {
 // CloudMigrateDriver interface provides Cloud migration features
 type CloudMigrateDriver interface {
 	// CloudMigrateStart starts a migrate operation
-	CloudMigrateStart(request *api.CloudMigrateStartRequest) error
+	CloudMigrateStart(request *api.CloudMigrateStartRequest) (*api.CloudMigrateStartResponse, error)
 	// CloudMigrateCancel cancels a migrate operation
 	CloudMigrateCancel(request *api.CloudMigrateCancelRequest) error
 	// CloudMigrateStatus returns status for the migration operations
-	CloudMigrateStatus() (*api.CloudMigrateStatusResponse, error)
+	CloudMigrateStatus(request *api.CloudMigrateStatusRequest) (*api.CloudMigrateStatusResponse, error)
 }
 
 // ProtoDriver must be implemented by all volume drivers.  It specifies the

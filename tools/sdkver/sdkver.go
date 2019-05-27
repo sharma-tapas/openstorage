@@ -30,6 +30,9 @@ import (
 
 type optionTypes struct {
 	swaggerFile string
+	checkMajor  string
+	checkMinor  string
+	checkPatch  string
 }
 
 var (
@@ -38,6 +41,9 @@ var (
 
 func init() {
 	flag.StringVar(&options.swaggerFile, "swagger", "", "api.swagger.json file")
+	flag.StringVar(&options.checkMajor, "check-major", "", "SDK Version.Major must match this value")
+	flag.StringVar(&options.checkMinor, "check-minor", "", "SDK Version.Minor must match this value")
+	flag.StringVar(&options.checkPatch, "check-patch", "", "SDK Version.Patch must match this value")
 	flag.Parse()
 }
 
@@ -48,6 +54,13 @@ func main() {
 		api.SdkVersion_Major,
 		api.SdkVersion_Minor,
 		api.SdkVersion_Patch)
+
+	// Check major
+	if !checkVersionValue("Major", options.checkMajor, fmt.Sprintf("%d", api.SdkVersion_Major)) ||
+		!checkVersionValue("Minor", options.checkMinor, fmt.Sprintf("%d", api.SdkVersion_Minor)) ||
+		!checkVersionValue("Patch", options.checkPatch, fmt.Sprintf("%d", api.SdkVersion_Patch)) {
+		os.Exit(1)
+	}
 
 	// Set swagger file
 	if len(options.swaggerFile) != 0 {
@@ -77,6 +90,30 @@ func setSwaggerVersion(file, version string) error {
 	jsonFile["info"].(map[string]interface{})["title"] = "OpenStorage SDK"
 	jsonFile["info"].(map[string]interface{})["version"] = version
 
+	// Set support for bearer tokens
+	type securitySchemes struct {
+		BearerAuth struct {
+			Type         string `json:"type"`
+			Scheme       string `json:"scheme"`
+			BearerFormat string `json:"bearerFormat"`
+		} `json:"bearerAuth"`
+	}
+	schemes := securitySchemes{}
+	schemes.BearerAuth.Type = "http"
+	schemes.BearerAuth.Scheme = "bearer"
+	schemes.BearerAuth.BearerFormat = "JWT"
+	jsonFile["components"].(map[string]interface{})["securitySchemes"] = schemes
+
+	// Set default security for all
+	type securityDefault struct {
+		BearerAuth []string `json:"bearerAuth"`
+	}
+	jsonFile["security"] = []securityDefault{
+		securityDefault{
+			BearerAuth: []string{},
+		},
+	}
+
 	bytes, err := json.MarshalIndent(jsonFile, "", "  ")
 	if err != nil {
 		return err
@@ -88,4 +125,18 @@ func setSwaggerVersion(file, version string) error {
 	}
 
 	return nil
+}
+
+func checkVersionValue(name, expected, actual string) bool {
+	if len(expected) != 0 {
+		if expected != actual {
+			fmt.Printf("Error: SDK Version %s number expected to be %s does not match %s\n",
+				name,
+				expected,
+				actual)
+			return false
+		}
+	}
+
+	return true
 }

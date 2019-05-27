@@ -5,26 +5,30 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/libopenstorage/gossip/types"
 	"github.com/libopenstorage/openstorage/api"
 	"github.com/libopenstorage/openstorage/api/client"
 	"github.com/libopenstorage/openstorage/cluster"
+	"github.com/libopenstorage/openstorage/pkg/clusterdomain"
 	sched "github.com/libopenstorage/openstorage/schedpolicy"
 	"github.com/libopenstorage/openstorage/secrets"
 )
 
 const (
-	clusterPath     = "/cluster"
-	secretPath      = "/secrets"
-	SchedPath       = "/schedpolicy"
-	loggingurl      = "/loggingurl"
-	managementurl   = "/managementurl"
-	fluentdhost     = "/fluentdconfig"
-	tunnelconfigurl = "/tunnelconfig"
-	PairPath        = "/pair"
-	PairTokenPath   = "/pairtoken"
+	clusterPath      = "/cluster"
+	secretPath       = "/secrets"
+	SchedPath        = "/schedpolicy"
+	loggingurl       = "/loggingurl"
+	managementurl    = "/managementurl"
+	fluentdhost      = "/fluentdconfig"
+	tunnelconfigurl  = "/tunnelconfig"
+	PairPath         = "/pair"
+	PairValidatePath = "/validate"
+	PairTokenPath    = "/pairtoken"
 )
 
 type clusterClient struct {
+	clusterdomain.NullClusterDomainManager
 	c *client.Client
 }
 
@@ -72,6 +76,18 @@ func (c *clusterClient) ProcessPairRequest(
 	return resp, nil
 }
 
+func (c *clusterClient) ValidatePair(
+	id string,
+) error {
+	path := clusterPath + PairPath + PairValidatePath
+	response := c.c.Put().Resource(path).Instance(id).Do()
+
+	if response.Error() != nil {
+		return response.FormatError()
+	}
+	return nil
+}
+
 func (c *clusterClient) DeletePair(
 	pairId string,
 ) error {
@@ -99,6 +115,19 @@ func (c *clusterClient) GetPair(
 		return nil, err
 	}
 	return resp, nil
+}
+
+func (c *clusterClient) RefreshPair(
+	pairId string,
+) error {
+
+	path := clusterPath + PairPath
+	response := c.c.Put().Resource(path).Instance(pairId).Do()
+
+	if response.Error() != nil {
+		return response.FormatError()
+	}
+	return nil
 }
 
 func (c *clusterClient) EnumeratePairs() (*api.ClusterPairsEnumerateResponse, error) {
@@ -179,6 +208,18 @@ func (c *clusterClient) UpdateLabels(nodeLabels map[string]string) error {
 	return nil
 }
 
+func (c *clusterClient) UpdateSchedulerNodeName(name string) error {
+	return nil
+}
+
+func (c *clusterClient) ClusterNotifyNodeDown(culpritNodeId string) (string, error) {
+	return "", nil
+}
+
+func (c *clusterClient) ClusterNotifyClusterDomainsUpdate(types.ClusterDomainsActiveMap) error {
+	return nil
+}
+
 func (c *clusterClient) GetData() (map[string]*api.Node, error) {
 	return nil, nil
 }
@@ -239,7 +280,7 @@ func (c *clusterClient) Shutdown() error {
 	return nil
 }
 
-func (c *clusterClient) Start(int, bool, string) error {
+func (c *clusterClient) Start(bool, string, string) error {
 	return nil
 }
 
@@ -247,7 +288,7 @@ func (c *clusterClient) Uuid() string {
 	return ""
 }
 
-func (c *clusterClient) StartWithConfiguration(int, bool, string, *cluster.ClusterServerConfiguration) error {
+func (c *clusterClient) StartWithConfiguration(bool, string, []string, string, *cluster.ClusterServerConfiguration) error {
 	return nil
 }
 

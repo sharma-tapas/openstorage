@@ -21,10 +21,9 @@ import (
 	"os"
 
 	"github.com/libopenstorage/openstorage/api"
-	"github.com/libopenstorage/openstorage/pkg/options"
 	"github.com/libopenstorage/openstorage/pkg/util"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi/v0"
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
@@ -44,25 +43,6 @@ func (s *OsdCsiServer) NodeGetInfo(
 	result := &csi.NodeGetInfoResponse{
 		NodeId: clus.NodeId,
 	}
-
-	return result, nil
-}
-
-// NodeGetId is a CSI API which gets the PX NodeId for the local node
-func (s *OsdCsiServer) NodeGetId(
-	ctx context.Context,
-	req *csi.NodeGetIdRequest,
-) (*csi.NodeGetIdResponse, error) {
-	clus, err := s.cluster.Enumerate()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Unable to Enumerate cluster: %s", err)
-	}
-
-	result := &csi.NodeGetIdResponse{
-		NodeId: clus.NodeId,
-	}
-
-	logrus.Infof("NodeId is %s", result.NodeId)
 
 	return result, nil
 }
@@ -90,27 +70,45 @@ func (s *OsdCsiServer) NodePublishVolume(
 		return nil, status.Error(codes.InvalidArgument, "Volume access mode must be provided")
 	}
 
-	// Get volume information
-	v, err := util.VolumeFromName(s.driver, req.GetVolumeId())
+	// Get grpc connection
+	conn, err := s.getConn()
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "Volume id %s not found: %s",
-			req.GetVolumeId(),
-			err.Error())
+		return nil, status.Errorf(
+			codes.Internal,
+			"Unable to connect to SDK server: %v", err)
+	}
+
+	// Get secret if any was passed
+	ctx = s.setupContextWithToken(ctx, req.GetSecrets())
+
+	// Check if block device
+	driverType := s.driver.Type()
+	if driverType != api.DriverType_DRIVER_TYPE_BLOCK &&
+		req.GetVolumeCapability().GetBlock() != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Trying to attach as block a non block device")
 	}
 
 	// Gather volume attributes
-	spec, _, _, err := s.specHandler.SpecFromOpts(req.GetVolumeAttributes())
+	spec, _, _, err := s.specHandler.SpecFromOpts(req.GetVolumeContext())
 	if err != nil {
 		return nil, status.Errorf(
 			codes.InvalidArgument,
 			"Invalid volume attributes: %#v",
-			req.GetVolumeAttributes())
+			req.GetVolumeContext())
 	}
 
-	// This seems weird as a way to change opts to map[string]string
-	opts := make(map[string]string)
-	if len(spec.GetPassphrase()) != 0 {
-		opts[options.OptionsSecret] = spec.GetPassphrase()
+	// prepare for mount/attaching
+	mounts := api.NewOpenStorageMountAttachClient(conn)
+	opts := &api.SdkVolumeAttachOptions{
+		SecretName: spec.GetPassphrase(),
+	}
+	if driverType == api.DriverType_DRIVER_TYPE_BLOCK {
+		if _, err = mounts.Attach(ctx, &api.SdkVolumeAttachRequest{
+			VolumeId: req.GetVolumeId(),
+			Options:  opts,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	// Verify target location is an existing directory
@@ -122,31 +120,13 @@ func (s *OsdCsiServer) NodePublishVolume(
 			err.Error())
 	}
 
-	// If this is for a block driver, first attach the volume
-	if s.driver.Type() == api.DriverType_DRIVER_TYPE_BLOCK {
-		if _, err := s.driver.Attach(req.GetVolumeId(), opts); err != nil {
-			return nil, status.Errorf(
-				codes.Internal,
-				"Unable to attach volume: %s",
-				err.Error())
-		}
-	}
-
 	// Mount volume onto the path
-	if err := s.driver.Mount(req.GetVolumeId(), req.GetTargetPath(), nil); err != nil {
-		// Detach on error
-		detachErr := s.driver.Detach(v.GetId(), opts)
-		if detachErr != nil {
-			logrus.Errorf("Unable to detach volume %s: %s",
-				v.GetId(),
-				detachErr.Error())
-		}
-		return nil, status.Errorf(
-			codes.Internal,
-			"Unable to mount volume %s onto %s: %s",
-			req.GetVolumeId(),
-			req.GetTargetPath(),
-			err.Error())
+	if _, err := mounts.Mount(ctx, &api.SdkVolumeMountRequest{
+		VolumeId:  req.GetVolumeId(),
+		MountPath: req.GetTargetPath(),
+		Options:   opts,
+	}); err != nil {
+		return nil, err
 	}
 
 	logrus.Infof("Volume %s mounted on %s",
@@ -180,20 +160,43 @@ func (s *OsdCsiServer) NodeUnpublishVolume(
 			err.Error())
 	}
 
-	// Verify target location is an existing directory
-	// See: https://github.com/container-storage-interface/spec/issues/60
-	if err = verifyTargetLocation(req.GetTargetPath()); err != nil {
-		return nil, status.Error(codes.NotFound, err.Error())
-	}
-
-	// Mount volume onto the path
-	if err = s.driver.Unmount(req.GetVolumeId(), req.GetTargetPath(), nil); err != nil {
+	// Get information about the target since the request does not
+	// tell us if it is for block or mount point.
+	// https://github.com/container-storage-interface/spec/issues/285
+	fileInfo, err := os.Lstat(req.GetTargetPath())
+	if err != nil && os.IsNotExist(err) {
+		// For idempotency, return that there is nothing to unmount
+		logrus.Infof("NodeUnpublishVolume on target path %s but it does "+
+			"not exist, returning there is nothing to do", req.GetTargetPath())
+		return &csi.NodeUnpublishVolumeResponse{}, nil
+	} else if err != nil {
 		return nil, status.Errorf(
 			codes.Internal,
-			"Unable to unmount volume %s onto %s: %s",
-			req.GetVolumeId(),
+			"Unknown error while verifying target location %s: %s",
 			req.GetTargetPath(),
 			err.Error())
+	}
+
+	// Check if it is block or not
+	if fileInfo.Mode()&os.ModeSymlink != 0 {
+		// If block, we just need to remove the link.
+		os.Remove(req.GetTargetPath())
+	} else {
+		if !fileInfo.IsDir() {
+			return nil, status.Errorf(
+				codes.NotFound,
+				"Target location %s is not a directory", req.GetTargetPath())
+		}
+
+		// Mount volume onto the path
+		if err = s.driver.Unmount(req.GetVolumeId(), req.GetTargetPath(), nil); err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"Unable to unmount volume %s onto %s: %s",
+				req.GetVolumeId(),
+				req.GetTargetPath(),
+				err.Error())
+		}
 	}
 
 	if s.driver.Type() == api.DriverType_DRIVER_TYPE_BLOCK {
@@ -233,7 +236,7 @@ func (s *OsdCsiServer) NodeGetCapabilities(
 }
 
 func verifyTargetLocation(targetPath string) error {
-	fileInfo, err := os.Stat(targetPath)
+	fileInfo, err := os.Lstat(targetPath)
 	if err != nil && os.IsNotExist(err) {
 		return fmt.Errorf("Target location %s does not exist", targetPath)
 	} else if err != nil {

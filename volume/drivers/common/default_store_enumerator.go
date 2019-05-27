@@ -182,13 +182,30 @@ func match(
 	volumeLabels map[string]string,
 ) bool {
 	if locator == nil {
-		return hasSubset(v.Spec.VolumeLabels, volumeLabels)
+		return hasSubset(v.Locator.VolumeLabels, volumeLabels)
+	}
+
+	if len(locator.GetVolumeIds()) != 0 && !contains(v.GetId(), locator.GetVolumeIds()) {
+		return false
+	}
+
+	if locator.GetGroup() != nil {
+		if v.GetSpec().GetGroup() == nil || !v.GetSpec().GetGroup().IsMatch(locator.GetGroup()) {
+			return false
+		}
+	}
+
+	if locator.GetOwnership() != nil {
+		// They asked to match an ownership. Now check if the volume has it
+		// and if it matches.
+		// Keep these separate if statements to make it readable.
+		if v.GetSpec().GetOwnership() == nil ||
+			!v.GetSpec().GetOwnership().IsMatch(locator.GetOwnership()) {
+			return false
+		}
 	}
 	if locator.Name != "" && v.Locator.Name != locator.Name {
 		return false
 	}
-	if !hasSubset(v.Locator.VolumeLabels, locator.VolumeLabels) {
-		return false
-	}
-	return hasSubset(v.Spec.VolumeLabels, volumeLabels)
+	return hasSubset(v.Locator.VolumeLabels, locator.VolumeLabels)
 }

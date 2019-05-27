@@ -19,17 +19,20 @@ package sdk
 import (
 	"context"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-
 	"github.com/libopenstorage/openstorage/api"
 	"github.com/libopenstorage/openstorage/cluster"
 	"github.com/portworx/kvdb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // NodeServer is an implementation of the gRPC OpenStorageNodeServer interface
 type NodeServer struct {
-	cluster cluster.Cluster
+	server serverAccessor
+}
+
+func (s *NodeServer) cluster() cluster.Cluster {
+	return s.server.cluster()
 }
 
 // Enumerate returns the ids of all the nodes in the cluster
@@ -37,7 +40,10 @@ func (s *NodeServer) Enumerate(
 	ctx context.Context,
 	req *api.SdkNodeEnumerateRequest,
 ) (*api.SdkNodeEnumerateResponse, error) {
-	c, err := s.cluster.Enumerate()
+	if s.cluster() == nil {
+		return nil, status.Error(codes.Unavailable, "Resource has not been initialized")
+	}
+	c, err := s.cluster().Enumerate()
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -57,12 +63,15 @@ func (s *NodeServer) Inspect(
 	ctx context.Context,
 	req *api.SdkNodeInspectRequest,
 ) (*api.SdkNodeInspectResponse, error) {
+	if s.cluster() == nil {
+		return nil, status.Error(codes.Unavailable, "Resource has not been initialized")
+	}
 
 	if len(req.GetNodeId()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "Node id must be provided")
 	}
 
-	node, err := s.cluster.Inspect(req.GetNodeId())
+	node, err := s.cluster().Inspect(req.GetNodeId())
 	if err != nil {
 		if err == kvdb.ErrNotFound {
 			return nil, status.Errorf(
@@ -82,8 +91,11 @@ func (s *NodeServer) InspectCurrent(
 	ctx context.Context,
 	req *api.SdkNodeInspectCurrentRequest,
 ) (*api.SdkNodeInspectCurrentResponse, error) {
+	if s.cluster() == nil {
+		return nil, status.Error(codes.Unavailable, "Resource has not been initialized")
+	}
 
-	c, err := s.cluster.Enumerate()
+	c, err := s.cluster().Enumerate()
 	if err != nil {
 		return nil, status.Errorf(
 			codes.Internal,

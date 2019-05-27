@@ -5,7 +5,6 @@ FROM fedora
 MAINTAINER luis@portworx.com
 
 ENV GOPATH=/go
-RUN dnf -y update
 RUN dnf -y install \
 	golang-bin \
 	python \
@@ -15,7 +14,7 @@ RUN dnf -y install \
 	make \
 	git \
 	protobuf-compiler \
-	protobuf-devel
+	protobuf-devel && dnf -y clean all && rm -rf /var/cache/yum
 RUN pip install virtualenv
 RUN gem install grpc && gem install grpc-tools
 RUN go get -u github.com/golang/protobuf/protoc-gen-go && \
@@ -46,6 +45,8 @@ RUN git checkout v1.4.1 && \
     go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger && \
 	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
 
+# Install swagger 2.0 to OpenApi 3.0 converter
+RUN npm install -g swagger2openapi
 # Finally, set working directory to the openstorage project
 RUN mkdir -p /go/src/github.com/libopenstorage/openstorage
 WORKDIR /go/src/github.com/libopenstorage/openstorage

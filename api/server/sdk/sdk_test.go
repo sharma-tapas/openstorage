@@ -17,28 +17,41 @@ limitations under the License.
 package sdk
 
 import (
+	"context"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
-
-	"github.com/libopenstorage/openstorage/alerts/mock"
-
-	"github.com/stretchr/testify/assert"
-	"google.golang.org/grpc"
 
 	"github.com/golang/mock/gomock"
 	"github.com/kubernetes-csi/csi-test/utils"
-
+	"github.com/libopenstorage/openstorage/alerts"
+	mockalerts "github.com/libopenstorage/openstorage/alerts/mock"
 	"github.com/libopenstorage/openstorage/api"
+	clustermanager "github.com/libopenstorage/openstorage/cluster/manager"
 	mockcluster "github.com/libopenstorage/openstorage/cluster/mock"
+	"github.com/libopenstorage/openstorage/config"
 	"github.com/libopenstorage/openstorage/pkg/grpcserver"
+	policy "github.com/libopenstorage/openstorage/pkg/storagepolicy"
 	"github.com/libopenstorage/openstorage/volume"
 	volumedrivers "github.com/libopenstorage/openstorage/volume/drivers"
 	mockdriver "github.com/libopenstorage/openstorage/volume/drivers/mock"
+	"github.com/portworx/kvdb"
+	"github.com/portworx/kvdb/mem"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 const (
 	mockDriverName = "mock"
+	testUds        = "/tmp/sdk-test.sock"
+	testHttpsPort  = "34000"
+	testRESTPort   = "34001"
 )
 
 // testServer is a simple struct used abstract
@@ -51,6 +64,10 @@ type testServer struct {
 	a      *mockalerts.MockFilterDeleter
 	mc     *gomock.Controller
 	gw     *httptest.Server
+}
+
+func init() {
+	logrus.SetLevel(logrus.PanicLevel)
 }
 
 func setupMockDriver(tester *testServer, t *testing.T) {
@@ -76,25 +93,46 @@ func newTestServer(t *testing.T) *testServer {
 
 	setupMockDriver(tester, t)
 
-	var err error
+	kv, err := kvdb.New(mem.Name, "policy", []string{}, nil, logrus.Panicf)
+	assert.NoError(t, err)
+	// Init storage policy manager
+	_, err = policy.Init(kv)
+	sp, err := policy.Inst()
+	assert.NotNil(t, sp)
+
 	// Setup simple driver
+	os.Remove(testUds)
 	tester.server, err = New(&ServerConfig{
 		DriverName:          mockDriverName,
 		Net:                 "tcp",
-		Address:             "127.0.0.1:0",
+		Address:             ":" + testHttpsPort,
+		RestPort:            testRESTPort,
+		Socket:              testUds,
 		Cluster:             tester.c,
+		StoragePolicy:       sp,
 		AlertsFilterDeleter: tester.a,
+		AccessOutput:        ioutil.Discard,
+		AuditOutput:         ioutil.Discard,
+		Security: &SecurityConfig{
+			Tls: &TLSConfig{
+				CertFile: "test_certs/server-cert.pem",
+				KeyFile:  "test_certs/server-key.pem",
+			},
+		},
 	})
 	assert.Nil(t, err)
 	err = tester.server.Start()
 	assert.Nil(t, err)
 
+	grpccreds, err := credentials.NewClientTLSFromFile("test_certs/server-cert.pem", "")
+	assert.Nil(t, err)
+
 	// Setup a connection to the driver
-	tester.conn, err = grpc.Dial(tester.server.Address(), grpc.WithInsecure())
+	tester.conn, err = grpcserver.Connect("localhost:"+testHttpsPort, []grpc.DialOption{grpc.WithTransportCredentials(grpccreds)})
 	assert.Nil(t, err)
 
 	// Setup REST gateway
-	mux, err := tester.server.restServerSetupHandlers()
+	mux, err := tester.server.restGateway.restServerSetupHandlers()
 	assert.NoError(t, err)
 	assert.NotNil(t, mux)
 	tester.gw = httptest.NewServer(mux)
@@ -132,7 +170,11 @@ func (s *testServer) Conn() *grpc.ClientConn {
 }
 
 func (s *testServer) Server() grpcserver.Server {
-	return s.server
+	return s.server.netServer
+}
+
+func (s *testServer) UdsServer() grpcserver.Server {
+	return s.server.udsServer
 }
 
 func (s *testServer) GatewayURL() string {
@@ -171,7 +213,158 @@ func TestSdkGateway(t *testing.T) {
 	s.MockCluster().EXPECT().Uuid().Return(id).Times(1)
 
 	// Then send the request
-	res, err = http.Get(s.GatewayURL() + "/v1/clusters/current")
+	res, err = http.Get(s.GatewayURL() + "/v1/clusters/inspectcurrent")
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusOK, res.StatusCode)
+
+	// Setup mock for CORS request
+	s.MockCluster().EXPECT().Enumerate().Return(cluster, nil).Times(1)
+	s.MockCluster().EXPECT().Uuid().Return(id).Times(1)
+
+	// Try cross-origin reqeuest, should get allowed
+	reqOrigin := "openstorage.io"
+	req, err := http.NewRequest("GET", s.GatewayURL()+"/v1/clusters/inspectcurrent", nil)
+	assert.NoError(t, err)
+	req.Header.Add("origin", reqOrigin)
+
+	resp, err := http.DefaultClient.Do(req)
+	assert.NoError(t, err)
+	assert.Equal(t, "*", resp.Header.Get("Access-Control-Allow-Origin"))
+
+}
+
+func TestSdkWithNoVolumeDriverThenAddOne(t *testing.T) {
+	kv, err := kvdb.New(mem.Name, "fake_test", []string{}, nil, logrus.Panicf)
+	if err != nil {
+		logrus.Panicf("Failed to initialize KVDB")
+	}
+	if err := kvdb.SetInstance(kv); err != nil {
+		logrus.Panicf("Failed to set KVDB instance")
+	}
+	clustermanager.Init(config.ClusterConfig{
+		ClusterId: "fakecluster",
+		NodeId:    "fakeNode",
+	})
+	cm, err := clustermanager.Inst()
+	go func() {
+		cm.Start(false, "9002", "")
+	}()
+	defer cm.Shutdown()
+	if err := volumedrivers.Register("fake", map[string]string{}); err != nil {
+		t.Fatalf("Unable to start volume driver fake: %v", err)
+	}
+
+	// Setup SDK Server with no volume driver
+	alert, err := alerts.NewFilterDeleter(kv)
+	assert.NoError(t, err)
+
+	sp, err := policy.Inst()
+	os.Remove(testUds)
+	server, err := New(&ServerConfig{
+		Net:                 "tcp",
+		Address:             ":" + testHttpsPort,
+		RestPort:            testRESTPort,
+		Socket:              testUds,
+		Cluster:             cm,
+		StoragePolicy:       sp,
+		AlertsFilterDeleter: alert,
+		AccessOutput:        ioutil.Discard,
+		AuditOutput:         ioutil.Discard,
+		Security: &SecurityConfig{
+			Tls: &TLSConfig{
+				CertFile: "test_certs/server-cert.pem",
+				KeyFile:  "test_certs/server-key.pem",
+			},
+		},
+	})
+	assert.Nil(t, err)
+	err = server.Start()
+	assert.Nil(t, err)
+	defer server.Stop()
+
+	grpccreds, err := credentials.NewClientTLSFromFile("test_certs/server-cert.pem", "")
+	assert.Nil(t, err)
+
+	// Setup a connection to the driver
+	conn, err := grpc.Dial("localhost:"+testHttpsPort, grpc.WithTransportCredentials(grpccreds))
+
+	// Setup API names that depend on the volume driver
+	// To get the names, look at api.pb.go and search for grpc.Invoke or c.cc.Invoke
+	apis := []string{
+		"/openstorage.api.OpenStorageVolume/Create",
+		"/openstorage.api.OpenStorageVolume/Clone",
+		"/openstorage.api.OpenStorageVolume/Delete",
+		"/openstorage.api.OpenStorageVolume/Inspect",
+		"/openstorage.api.OpenStorageVolume/Stats",
+		"/openstorage.api.OpenStorageVolume/Enumerate",
+		"/openstorage.api.OpenStorageVolume/EnumerateWithFilters",
+		"/openstorage.api.OpenStorageVolume/SnapshotCreate",
+		"/openstorage.api.OpenStorageVolume/SnapshotRestore",
+		"/openstorage.api.OpenStorageVolume/SnapshotEnumerate",
+		"/openstorage.api.OpenStorageVolume/SnapshotEnumerateWithFilters",
+		"/openstorage.api.OpenStorageVolume/SnapshotScheduleUpdate",
+		"/openstorage.api.OpenStorageMountAttach/Attach",
+		"/openstorage.api.OpenStorageMountAttach/Detach",
+		"/openstorage.api.OpenStorageMountAttach/Mount",
+		"/openstorage.api.OpenStorageMountAttach/Unmount",
+		"/openstorage.api.OpenStorageCloudBackup/Create",
+		"/openstorage.api.OpenStorageCloudBackup/Restore",
+		"/openstorage.api.OpenStorageCloudBackup/Delete",
+		"/openstorage.api.OpenStorageCloudBackup/DeleteAll",
+		"/openstorage.api.OpenStorageCloudBackup/EnumerateWithFilters",
+		"/openstorage.api.OpenStorageCloudBackup/Status",
+		"/openstorage.api.OpenStorageCloudBackup/Catalog",
+		"/openstorage.api.OpenStorageCloudBackup/History",
+		"/openstorage.api.OpenStorageCloudBackup/StateChange",
+		"/openstorage.api.OpenStorageCloudBackup/SchedCreate",
+		"/openstorage.api.OpenStorageCloudBackup/SchedDelete",
+		"/openstorage.api.OpenStorageCloudBackup/SchedEnumerate",
+		"/openstorage.api.OpenStorageCredentials/Create",
+		"/openstorage.api.OpenStorageCredentials/Enumerate",
+		"/openstorage.api.OpenStorageCredentials/Inspect",
+		"/openstorage.api.OpenStorageCredentials/Delete",
+		"/openstorage.api.OpenStorageCredentials/Validate",
+	}
+
+	// The main purpose of this test is to make sure that the server
+	// does not panic using a nil point to a driver
+	for _, api := range apis {
+		err = conn.Invoke(context.Background(), api, nil, nil)
+		assert.Error(t, err)
+		serverError, ok := status.FromError(err)
+		assert.True(t, ok)
+		assert.Equal(t, serverError.Code(), codes.Unavailable)
+		assert.Contains(t, serverError.Message(), "Resource")
+	}
+
+	// Check the driver is not loaded
+	identities := api.NewOpenStorageIdentityClient(conn)
+	id, err := identities.Version(context.Background(), &api.SdkIdentityVersionRequest{})
+	assert.NoError(t, err)
+	assert.Contains(t, id.GetVersion().GetDriver(), "no driver")
+
+	// Now add the volume driver
+	d, err := volumedrivers.Get("fake")
+	assert.NoError(t, err)
+	driverMap := map[string]volume.VolumeDriver{"fake": d, DefaultDriverName: d}
+	server.UseVolumeDrivers(driverMap)
+
+	// Identify that the driver is now running
+	id, err = identities.Version(context.Background(), &api.SdkIdentityVersionRequest{})
+	assert.NoError(t, err)
+	assert.Equal(t, "fake", id.GetVersion().GetDriver())
+
+	// This part of the test we cannot simply send nils for request and response
+	// because real data is being passed. Therefore, a single call will satisfy that
+	// the driver is working now.
+	volumes := api.NewOpenStorageVolumeClient(conn)
+	r, err := volumes.Create(context.Background(), &api.SdkVolumeCreateRequest{
+		Name: "myvol",
+		Spec: &api.VolumeSpec{
+			Size:    uint64(12345),
+			HaLevel: 1,
+		},
+	})
+	assert.NoError(t, err)
+	assert.True(t, len(r.GetVolumeId()) != 0)
 }

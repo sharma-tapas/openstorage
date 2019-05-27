@@ -1,8 +1,20 @@
-HAS_PACKR := $(shell command -v packr 2> /dev/null)
-HAS_PROTOC_GEN_GRPC_GATEWAY := $(shell command -v protoc-gen-grpc-gateway 2> /dev/null)
-HAS_PROTOC_GEN_SWAGGER := $(shell command -v protoc-gen-swagger 2> /dev/null)
-HAS_PROTOC_GEN_GO := $(shell command -v protoc-gen-go 2> /dev/null)
 HAS_SDKTEST := $(shell command -v sdk-test 2> /dev/null)
+BRANCH	:= $(shell git rev-parse --abbrev-ref HEAD)
+
+ifeq ($(TRAVIS_BRANCH), master)
+MOCKSDKSERVERTAG := latest
+else
+
+ifeq ($(BRANCH), master)
+MOCKSDKSERVERTAG := latest
+else
+MOCKSDKSERVERTAG := $(shell go run tools/sdkver/sdkver.go)
+endif
+
+endif
+
+REGISTRY = openstorage
+IMAGE_MOCKSDKSERVER := $(REGISTRY)/mock-sdk-server:$(MOCKSDKSERVERTAG)
 
 ifndef TAGS
 TAGS := daemon
@@ -38,27 +50,100 @@ endif
 
 OSDSANITY:=cmd/osd-sanity/osd-sanity
 
-export GO15VENDOREXPERIMENT=1
+.PHONY: \
+	all \
+	deps \
+	update-deps \
+	test-deps \
+	update-test-deps \
+	vendor-update \
+	vendor-without-update \
+	vendor \
+	build \
+	install \
+	proto \
+	lint \
+	vet \
+	packr \
+	errcheck \
+	pretest \
+	test \
+	docs \
+	docker-build-osd-dev \
+	docker-build \
+	docker-test \
+	docker-build-osd-internal \
+	docker-build-osd \
+	launch \
+	launch-local-btrfs \
+	install-flexvolume-plugin \
+	$(OSDSANITY)-install \
+	$(OSDSANITY)-clean \
+	clean \
+	generate \
+	generate-mockfiles \
+	sdk-check-version
+
 
 all: build $(OSDSANITY)
 
+# TOOLS build rules
+#
+$(GOPATH)/bin/golint:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/golang/lint/golint
+
+$(GOPATH)/bin/errcheck:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/kisielk/errcheck
+
+$(GOPATH)/bin/protoc-gen-go:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/golang/protobuf/protoc-gen-go
+
+$(GOPATH)/bin/protoc-gen-grpc-gateway:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
+
+$(GOPATH)/bin/protoc-gen-swagger:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger
+
+$(GOPATH)/bin/govendor:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/kardianos/govendor
+
+$(GOPATH)/bin/packr:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/gobuffalo/packr/...
+
+$(GOPATH)/bin/cover:
+	@echo "Installing missing $@ ..."
+	go get -u golang.org/x/tools/cmd/cover
+
+$(GOPATH)/bin/gotestcover:
+	@echo "Installing missing $@ ..."
+	go get -u github.com/pierrre/gotestcover
+
+# DEPS build rules
+#
+
 deps:
-	GO15VENDOREXPERIMENT=0 go get -d -v $(PKGS)
+	go get -d -v $(PKGS)
 
 update-deps:
-	GO15VENDOREXPERIMENT=0 go get -d -v -u -f $(PKGS)
+	go get -d -v -u -f $(PKGS)
 
 test-deps:
-	GO15VENDOREXPERIMENT=0 go get -d -v -t $(PKGS)
+	go get -d -v -t $(PKGS)
 
 update-test-deps:
-	GO15VENDOREXPERIMENT=0 go get -tags "$(TAGS)" -d -v -t -u -f $(PKGS)
+	go get -tags "$(TAGS)" -d -v -t -u -f $(PKGS)
 
 vendor-update:
-	GO15VENDOREXPERIMENT=0 GOOS=linux GOARCH=amd64 go get -tags "daemon btrfs_noversion have_btrfs have_chainfs" -d -v -t -u -f $(PKGS)
+	GOOS=linux GOARCH=amd64 go get -tags "daemon btrfs_noversion have_btrfs have_chainfs" -d -v -t -u -f $(PKGS)
 
-vendor-without-update:
-	go get -v github.com/kardianos/govendor
+vendor-without-update: $(GOPATH)/bin/govendor
 	rm -rf vendor
 	govendor init
 	GOOS=linux GOARCH=amd64 govendor add +external
@@ -73,6 +158,7 @@ build: packr
 
 install: packr $(OSDSANITY)-install
 	go install -tags "$(TAGS)" $(PKGS)
+	go install github.com/libopenstorage/openstorage/cmd/osd-token-generator
 
 $(OSDSANITY):
 	@$(MAKE) -C cmd/osd-sanity
@@ -84,38 +170,24 @@ $(OSDSANITY)-clean:
 	@$(MAKE) -C cmd/osd-sanity clean
 
 docker-build-proto:
-	docker build -t openstorage/osd-proto -f Dockerfile.proto .
+	docker build -t quay.io/openstorage/osd-proto -f Dockerfile.proto .
 
-docker-proto: docker-build-proto
+docker-proto: $(GOPATH)/bin/protoc-gen-go
 	docker run \
 		--privileged \
 		-v $(shell pwd):/go/src/github.com/libopenstorage/openstorage \
 		-e "GOPATH=/go" \
 		-e "DOCKER_PROTO=yes" \
 		-e "PATH=/bin:/usr/bin:/usr/local/bin:/go/bin" \
-		openstorage/osd-proto \
+		quay.io/openstorage/osd-proto \
 			make proto
 
-proto:
+proto: $(GOPATH)/bin/protoc-gen-go $(GOPATH)/bin/protoc-gen-grpc-gateway $(GOPATH)/bin/protoc-gen-swagger
 ifndef DOCKER_PROTO
 	$(error Do not run directly. Run 'make docker-proto' instead.)
 endif
-ifndef HAS_PROTOC_GEN_GO
-	@echo "Installing protoc-gen-go"
-	go get -u github.com/golang/protobuf/protoc-gen-go
-endif
 
-ifndef HAS_PROTOC_GEN_GRPC_GATEWAY
-	@echo "Installing protoc-gen-grpc-gateway"
-	go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
-endif
-
-ifndef HAS_PROTOC_GEN_SWAGGER
-	@echo "Installing protoc-gen-swagger"
-	go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger
-endif
-
-	@echo "Generating protobuf definitions from api/api.proto"
+	@echo ">>> Generating protobuf definitions from api/api.proto"
 	$(PROTOC) -I $(PROTOSRC_PATH) \
 		-I /usr/local/include \
 		-I $(PROTOS_PATH)/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
@@ -131,23 +203,25 @@ endif
 		-I $(PROTOS_PATH)/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
 		--swagger_out=logtostderr=true:$(PROTOSRC_PATH)/api/server/sdk \
 		$(PROTOSRC_PATH)/api/api.proto
-	@echo "Generating grpc protobuf definitions from pkg/flexvolume/flexvolume.proto"
+	@echo ">>> Upgrading swagger 2.0 to openapi 3.0"
+	mv api/server/sdk/api/api.swagger.json api/server/sdk/api/20api.swagger.json
+	swagger2openapi api/server/sdk/api/20api.swagger.json -o api/server/sdk/api/api.swagger.json
+	rm -f api/server/sdk/api/20api.swagger.json
+	@echo ">>> Generating grpc protobuf definitions from pkg/flexvolume/flexvolume.proto"
 	$(PROTOC) -I/usr/local/include -I$(PROTOSRC_PATH) -I$(PROTOS_PATH)/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis --go_out=plugins=grpc:. $(PROTOSRC_PATH)/pkg/flexvolume/flexvolume.proto
 	$(PROTOC) -I/usr/local/include -I$(PROTOSRC_PATH) -I$(PROTOS_PATH)/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis --grpc-gateway_out=logtostderr=true:. $(PROTOSRC_PATH)/pkg/flexvolume/flexvolume.proto
-	@echo "Generating protobuf definitions from pkg/jsonpb/testing/testing.proto"
+	@echo ">>> Generating protobuf definitions from pkg/jsonpb/testing/testing.proto"
 	$(PROTOC) -I $(PROTOSRC_PATH) $(PROTOSRC_PATH)/pkg/jsonpb/testing/testing.proto --go_out=plugins=grpc:.
-	@echo "Updating SDK versions"
+	@echo ">>> Updating SDK versions"
 	go run tools/sdkver/sdkver.go --swagger api/server/sdk/api/api.swagger.json
 
-lint:
-	go get -v github.com/golang/lint/golint
+lint: $(GOPATH)/bin/golint
 	golint $(PKGS)
 
 vet:
 	go vet $(PKGS)
 
-errcheck:
-	go get -v github.com/kisielk/errcheck
+errcheck: $(GOPATH)/bin/errcheck
 	errcheck -tags "$(TAGS)" $(PKGS)
 
 pretest: lint vet errcheck
@@ -160,7 +234,7 @@ ifndef HAS_SDKTEST
 endif
 
 test-sdk: install-sdk-test launch-sdk
-	timeout 30 sh -c 'until curl --silent -X GET -d {} http://localhost:9110/v1/clusters/current | grep STATUS_OK; do sleep 1; done'
+	timeout 30 sh -c 'until curl --silent -X GET -d {} http://localhost:9110/v1/clusters/inspectcurrent | grep STATUS_OK; do sleep 1; done'
 	sdk-test -ginkgo.noColor -ginkgo.noisySkippings=false -sdk.endpoint=localhost:9100 -sdk.cpg=$(GOPATH)/src/github.com/libopenstorage/sdk-test/cmd/sdk-test/cb.yaml
 
 test: packr
@@ -168,13 +242,9 @@ test: packr
 
 docs:
 	go generate ./cmd/osd/main.go
-	swagger validate api/swagger/swagger.json
 
-packr:
-ifndef HAS_PACKR
-	@echo "Installing packr to embed websites in golang"
-	go get -u github.com/gobuffalo/packr/...
-endif
+packr: $(GOPATH)/bin/packr
+	packr clean
 	packr
 
 generate-mockfiles:
@@ -192,10 +262,17 @@ docker-build-mock-sdk-server: packr
 				-tags "$(TAGS)" \
 				-o ./_tmp/osd \
 				./cmd/osd
-	docker build -t openstorage/mock-sdk-server -f Dockerfile.sdk .
+	docker build -t $(IMAGE_MOCKSDKSERVER) -f Dockerfile.sdk .
 	rm -rf _tmp
 
+docker-build-osd-dev-base:
+	docker build -t quay.io/openstorage/osd-dev-base -f Dockerfile.osd-dev-base .
+
+push-mock-sdk-server: docker-build-mock-sdk-server
+	docker push $(IMAGE_MOCKSDKSERVER)
+
 docker-build-osd-dev:
+	# This image is local only and will not be pushed
 	docker build -t openstorage/osd-dev -f Dockerfile.osd-dev .
 
 docker-build: docker-build-osd-dev
@@ -224,6 +301,13 @@ docker-test: docker-build-osd-dev
 		-e GCE_INSTANCE_NAME \
 		-e GCE_INSTANCE_ZONE \
 		-e GCE_INSTANCE_PROJECT \
+		-e AZURE_INSTANCE_NAME \
+		-e AZURE_SUBSCRIPTION_ID \
+		-e AZURE_RESOURCE_GROUP_NAME \
+		-e AZURE_ENVIRONMENT \
+		-e AZURE_TENANT_ID \
+		-e AZURE_CLIENT_ID \
+		-e AZURE_CLIENT_SECRET \
 		-e "TAGS=$(TAGS)" \
 		-e "PKGS=$(PKGS)" \
 		-e "BUILDFLAGS=$(BUILDFLAGS)" \
@@ -235,7 +319,7 @@ docker-build-osd-internal:
 	rm -rf _tmp
 	mkdir -p _tmp
 	go build -a -tags "$(TAGS)" -o _tmp/osd cmd/osd/main.go
-	docker build -t openstorage/osd -f Dockerfile.osd .
+	docker build -t quay.io/openstorage/osd -f Dockerfile.osd .
 
 docker-build-osd: docker-build-osd-dev
 	docker run \
@@ -250,7 +334,7 @@ launch-sdk-quick:
 	@-docker stop sdk > /dev/null 2>&1
 	docker run --rm --name sdk \
 		-d -p 9110:9110 -p 9100:9100 \
-		openstorage/mock-sdk-server
+		$(IMAGE_MOCKSDKSERVER)
 
 launch-sdk: sdk launch-sdk-quick
 
@@ -264,7 +348,7 @@ launch: docker-build-osd
 		-p 9005:9005 \
 		-p 9100:9100 \
 		-p 9110:9110 \
-		openstorage/osd -d -f /etc/config/config.yaml
+		quay.io/openstorage/osd -d -f /etc/config/config.yaml
 
 # must set HAVE_BTRFS
 launch-local-btrfs: install
@@ -283,44 +367,6 @@ install-flexvolume-plugin: install-flexvolume
 clean: $(OSDSANITY)-clean
 	go clean -i $(PKGS)
 	packr clean
-
-.PHONY: \
-	all \
-	deps \
-	update-deps \
-	test-deps \
-	update-test-deps \
-	vendor-update \
-	vendor-without-update \
-	vendor \
-	build \
-	install \
-	proto \
-	lint \
-	vet \
-	errcheck \
-	pretest \
-	test \
-	docs \
-	docker-build-osd-dev \
-	docker-build \
-	docker-test \
-	docker-build-osd-internal \
-	docker-build-osd \
-	launch \
-	launch-local-btrfs \
-	install-flexvolume-plugin \
-	$(OSDSANITY)-install \
-	$(OSDSANITY)-clean \
-	clean \
-	generate \
-	generate-mockfiles
-
-$(GOPATH)/bin/cover:
-	go get golang.org/x/tools/cmd/cover
-
-$(GOPATH)/bin/gotestcover:
-	go get github.com/pierrre/gotestcover
 
 # Generate test-coverage HTML report
 # - note: the 'go test -coverprofile...' does append results, so we're merging individual pkgs in for-loop
@@ -345,3 +391,15 @@ docker-coverage: docker-build-osd-dev
 		-e "TESTFLAGS=$(TESTFLAGS)" \
 		openstorage/osd-dev \
 			make coverage
+
+docker-images: docker-build-proto docker-build-osd-dev-base
+push-docker-images: docker-images
+	docker push quay.io/openstorage/osd-dev-base
+	docker push quay.io/openstorage/osd-proto
+
+# This needs to be adjusted for each release branch according
+# to the SDK Version.
+# For master (until released), major should be 0 and patch should be 0.
+# For release branches, major and minor should be frozen.
+sdk-check-version:
+	go run tools/sdkver/sdkver.go --check-major=0 --check-patch=0

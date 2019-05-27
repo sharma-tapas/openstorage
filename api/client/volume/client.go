@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net/http"
 	"strconv"
 
 	"github.com/libopenstorage/openstorage/api"
 	"github.com/libopenstorage/openstorage/api/client"
+	ost_errors "github.com/libopenstorage/openstorage/api/errors"
 	"github.com/libopenstorage/openstorage/volume"
 )
 
@@ -190,6 +192,7 @@ func (v *volumeClient) Snapshot(volumeID string,
 	if err := v.c.Post().Resource(snapPath).Body(request).Do().Unmarshal(response); err != nil {
 		return "", err
 	}
+
 	// TODO(pedge): this probably should not be embedded in this way
 	if response.VolumeCreateResponse != nil &&
 		response.VolumeCreateResponse.VolumeResponse != nil &&
@@ -249,6 +252,25 @@ func (v *volumeClient) GetActiveRequests() (*api.ActiveRequests, error) {
 
 	requests := &api.ActiveRequests{}
 	resp := v.c.Get().Resource(volumePath + "/requests").Instance("vol_id").Do()
+
+	if resp.Error() != nil {
+		return nil, resp.FormatError()
+	}
+
+	if err := resp.Unmarshal(requests); err != nil {
+		return nil, err
+	}
+
+	return requests, nil
+}
+
+// CapacityUsage returns exclusive and shared capacity
+// usage of a snapshot/volume
+func (v *volumeClient) CapacityUsage(
+	ID string,
+) (*api.CapacityUsageResponse, error) {
+	requests := &api.CapacityUsageResponse{}
+	resp := v.c.Get().Resource(volumePath + "/usage").Instance(ID).Do()
 
 	if resp.Error() != nil {
 		return nil, resp.FormatError()
@@ -484,6 +506,9 @@ func (v *volumeClient) CredsValidate(uuid string) error {
 	req := v.c.Put().Resource(api.OsdCredsPath + "/validate").Instance(uuid)
 	response := req.Do()
 	if response.Error() != nil {
+		if response.StatusCode() == http.StatusUnprocessableEntity {
+			return volume.NewCredentialError(response.Error().Error())
+		}
 		return response.FormatError()
 	}
 	return nil
@@ -492,25 +517,42 @@ func (v *volumeClient) CredsValidate(uuid string) error {
 // CloudBackupCreate uploads snapshot of a volume to cloud
 func (v *volumeClient) CloudBackupCreate(
 	input *api.CloudBackupCreateRequest,
-) error {
+) (*api.CloudBackupCreateResponse, error) {
+	createResp := &api.CloudBackupCreateResponse{}
 	req := v.c.Post().Resource(api.OsdBackupPath).Body(input)
 	response := req.Do()
 	if response.Error() != nil {
-		return response.FormatError()
+		if response.StatusCode() == http.StatusConflict {
+			return nil, &ost_errors.ErrExists{
+				Type: "CloudBackupCreate",
+				ID:   input.Name,
+			}
+		}
+		return nil, response.FormatError()
 	}
-	return nil
+	if err := response.Unmarshal(&createResp); err != nil {
+		return nil, err
+	}
+	return createResp, nil
 }
 
 // CloudBackupGroupCreate uploads snapshots of a volume group to cloud
 func (v *volumeClient) CloudBackupGroupCreate(
 	input *api.CloudBackupGroupCreateRequest,
-) error {
+) (*api.CloudBackupGroupCreateResponse, error) {
+
+	createResp := &api.CloudBackupGroupCreateResponse{}
 	req := v.c.Post().Resource(api.OsdBackupPath + "/group").Body(input)
 	response := req.Do()
 	if response.Error() != nil {
-		return response.FormatError()
+		return nil, response.FormatError()
 	}
-	return nil
+
+	if err := response.Unmarshal(&createResp); err != nil {
+		return nil, err
+	}
+
+	return createResp, nil
 }
 
 // CloudBackupRestore downloads a cloud backup to a newly created volume
@@ -521,6 +563,12 @@ func (v *volumeClient) CloudBackupRestore(
 	req := v.c.Post().Resource(api.OsdBackupPath + "/restore").Body(input)
 	response := req.Do()
 	if response.Error() != nil {
+		if response.StatusCode() == http.StatusConflict {
+			return nil, &ost_errors.ErrExists{
+				Type: "CloudBackupRestore",
+				ID:   input.Name,
+			}
+		}
 		return nil, response.FormatError()
 	}
 
@@ -696,12 +744,13 @@ func (v *volumeClient) CloudBackupSchedEnumerate() (*api.CloudBackupSchedEnumera
 	return enumerateResponse, nil
 }
 
-func (v *volumeClient) SnapshotGroup(groupID string, labels map[string]string) (*api.GroupSnapCreateResponse, error) {
+func (v *volumeClient) SnapshotGroup(groupID string, labels map[string]string, volumeIDs []string) (*api.GroupSnapCreateResponse, error) {
 
 	response := &api.GroupSnapCreateResponse{}
 	request := &api.GroupSnapCreateRequest{
-		Id:     groupID,
-		Labels: labels,
+		Id:        groupID,
+		Labels:    labels,
+		VolumeIds: volumeIDs,
 	}
 
 	req := v.c.Post().Resource(snapPath + "/snapshotgroup").Body(request)
@@ -716,13 +765,23 @@ func (v *volumeClient) SnapshotGroup(groupID string, labels map[string]string) (
 	return response, nil
 }
 
-func (v *volumeClient) CloudMigrateStart(request *api.CloudMigrateStartRequest) error {
+func (v *volumeClient) CloudMigrateStart(request *api.CloudMigrateStartRequest) (*api.CloudMigrateStartResponse, error) {
+	startResponse := &api.CloudMigrateStartResponse{}
 	req := v.c.Post().Resource(api.OsdMigrateStartPath).Body(request)
 	response := req.Do()
 	if response.Error() != nil {
-		return response.FormatError()
+		if response.StatusCode() == http.StatusConflict {
+			return nil, &ost_errors.ErrExists{
+				Type: "CloudMigrate",
+				ID:   request.TaskId,
+			}
+		}
+		return nil, response.FormatError()
 	}
-	return nil
+	if err := response.Unmarshal(startResponse); err != nil {
+		return nil, err
+	}
+	return startResponse, nil
 }
 
 func (v *volumeClient) CloudMigrateCancel(request *api.CloudMigrateCancelRequest) error {
@@ -734,9 +793,9 @@ func (v *volumeClient) CloudMigrateCancel(request *api.CloudMigrateCancelRequest
 	return nil
 }
 
-func (v *volumeClient) CloudMigrateStatus() (*api.CloudMigrateStatusResponse, error) {
+func (v *volumeClient) CloudMigrateStatus(request *api.CloudMigrateStatusRequest) (*api.CloudMigrateStatusResponse, error) {
 	statusResponse := &api.CloudMigrateStatusResponse{}
-	req := v.c.Get().Resource(api.OsdMigrateStatusPath)
+	req := v.c.Get().Resource(api.OsdMigrateStatusPath).Body(request)
 	response := req.Do()
 	if response.Error() != nil {
 		return nil, response.FormatError()

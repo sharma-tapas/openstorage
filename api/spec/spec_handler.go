@@ -44,6 +44,22 @@ type SpecHandler interface {
 		string,
 	)
 
+	// GetTokenFromString parses the token from the name.
+	// If the token is not present in the name, it will
+	// check inside of the docker options passed in.
+	// If the token was parsed, it returns:
+	// 	(token, true)
+	// If the token wasn't parsed, it returns:
+	// 	("", false)
+	GetTokenFromString(str string) (string, bool)
+
+	// GetTokenSecretFromString parses the full token secret path from the name.
+	// If the token was parsed, it returns:
+	// 	(tokenSecret, true)
+	// If the token wasn't parsed, it returns:
+	// 	("", false)
+	GetTokenSecretFromString(str string) (string, bool)
+
 	// SpecFromOpts parses in docker options passed in the the docker run
 	// command of the form --opt name=value
 	// source is populated if --opt parent=<volume_id> is specified.
@@ -76,33 +92,37 @@ type SpecHandler interface {
 }
 
 var (
-	nameRegex       = regexp.MustCompile(api.Name + "=([0-9A-Za-z_-]+),?")
-	nodesRegex      = regexp.MustCompile(api.SpecNodes + "=([A-Za-z0-9-_;]+),?")
-	parentRegex     = regexp.MustCompile(api.SpecParent + "=([A-Za-z]+),?")
-	sizeRegex       = regexp.MustCompile(api.SpecSize + "=([0-9A-Za-z]+),?")
-	scaleRegex      = regexp.MustCompile(api.SpecScale + "=([0-9]+),?")
-	fsRegex         = regexp.MustCompile(api.SpecFilesystem + "=([0-9A-Za-z]+),?")
-	bsRegex         = regexp.MustCompile(api.SpecBlockSize + "=([0-9]+),?")
-	queueDepthRegex = regexp.MustCompile(api.SpecQueueDepth + "=([0-9]+),?")
-	haRegex         = regexp.MustCompile(api.SpecHaLevel + "=([0-9]+),?")
-	cosRegex        = regexp.MustCompile(api.SpecPriority + "=([A-Za-z]+),?")
-	sharedRegex     = regexp.MustCompile(api.SpecShared + "=([A-Za-z]+),?")
-	journalRegex    = regexp.MustCompile(api.SpecJournal + "=([A-Za-z]+),?")
-	sharedv4Regex   = regexp.MustCompile(api.SpecSharedv4 + "=([A-Za-z]+),?")
-	cascadedRegex   = regexp.MustCompile(api.SpecCascaded + "=([A-Za-z]+),?")
-	passphraseRegex = regexp.MustCompile(api.SpecPassphrase + "=([0-9A-Za-z_@./#&+-]+),?")
-	stickyRegex     = regexp.MustCompile(api.SpecSticky + "=([A-Za-z]+),?")
-	secureRegex     = regexp.MustCompile(api.SpecSecure + "=([A-Za-z]+),?")
-	zonesRegex      = regexp.MustCompile(api.SpecZones + "=([A-Za-z]+),?")
-	racksRegex      = regexp.MustCompile(api.SpecRacks + "=([A-Za-z]+),?")
-	rackRegex       = regexp.MustCompile(api.SpecRack + "=([A-Za-z]+),?")
-	aggrRegex       = regexp.MustCompile(api.SpecAggregationLevel + "=([0-9]+|" +
-		api.SpecAutoAggregationValue + "),?")
-	compressedRegex   = regexp.MustCompile(api.SpecCompressed + "=([A-Za-z]+),?")
-	snapScheduleRegex = regexp.MustCompile(api.SpecSnapshotSchedule +
-		`=([A-Za-z0-9:;@=#]+),?`)
+	nameRegex                   = regexp.MustCompile(api.Name + "=([0-9A-Za-z_-]+),?")
+	tokenRegex                  = regexp.MustCompile(api.Token + "=([A-Za-z0-9-_=]+\\.[A-Za-z0-9-_=]+\\.?[A-Za-z0-9-_.+/=]+),?")
+	tokenSecretRegex            = regexp.MustCompile(api.TokenSecret + `=/*([0-9A-Za-z_/]+),?`)
+	nodesRegex                  = regexp.MustCompile(api.SpecNodes + "=([A-Za-z0-9-_;]+),?")
+	parentRegex                 = regexp.MustCompile(api.SpecParent + "=([A-Za-z]+),?")
+	sizeRegex                   = regexp.MustCompile(api.SpecSize + "=([0-9A-Za-z]+),?")
+	scaleRegex                  = regexp.MustCompile(api.SpecScale + "=([0-9]+),?")
+	fsRegex                     = regexp.MustCompile(api.SpecFilesystem + "=([0-9A-Za-z]+),?")
+	bsRegex                     = regexp.MustCompile(api.SpecBlockSize + "=([0-9]+),?")
+	queueDepthRegex             = regexp.MustCompile(api.SpecQueueDepth + "=([0-9]+),?")
+	haRegex                     = regexp.MustCompile(api.SpecHaLevel + "=([0-9]+),?")
+	cosRegex                    = regexp.MustCompile(api.SpecPriority + "=([A-Za-z]+),?")
+	sharedRegex                 = regexp.MustCompile(api.SpecShared + "=([A-Za-z]+),?")
+	journalRegex                = regexp.MustCompile(api.SpecJournal + "=([A-Za-z]+),?")
+	sharedv4Regex               = regexp.MustCompile(api.SpecSharedv4 + "=([A-Za-z]+),?")
+	cascadedRegex               = regexp.MustCompile(api.SpecCascaded + "=([A-Za-z]+),?")
+	passphraseRegex             = regexp.MustCompile(api.SpecPassphrase + "=([0-9A-Za-z_@./#&+-]+),?")
+	stickyRegex                 = regexp.MustCompile(api.SpecSticky + "=([A-Za-z]+),?")
+	secureRegex                 = regexp.MustCompile(api.SpecSecure + "=([A-Za-z]+),?")
+	zonesRegex                  = regexp.MustCompile(api.SpecZones + "=([A-Za-z]+),?")
+	racksRegex                  = regexp.MustCompile(api.SpecRacks + "=([A-Za-z]+),?")
+	rackRegex                   = regexp.MustCompile(api.SpecRack + "=([A-Za-z]+),?")
+	aggrRegex                   = regexp.MustCompile(api.SpecAggregationLevel + "=([0-9]+|" + api.SpecAutoAggregationValue + "),?")
+	compressedRegex             = regexp.MustCompile(api.SpecCompressed + "=([A-Za-z]+),?")
+	snapScheduleRegex           = regexp.MustCompile(api.SpecSnapshotSchedule + `=([A-Za-z0-9:;@=#]+),?`)
 	ioProfileRegex              = regexp.MustCompile(api.SpecIoProfile + "=([0-9A-Za-z_-]+),?")
+	asyncIoRegex                = regexp.MustCompile(api.SpecAsyncIo + "=([A-Za-z]+),?")
+	earlyAckRegex               = regexp.MustCompile(api.SpecEarlyAck + "=([A-Za-z]+),?")
 	forceUnsupportedFsTypeRegex = regexp.MustCompile(api.SpecForceUnsupportedFsType + "=([A-Za-z]+),?")
+	nodiscardRegex              = regexp.MustCompile(api.SpecNodiscard + "=([A-Za-z]+),?")
+	storagePolicyRegex          = regexp.MustCompile(api.StoragePolicy + "=([0-9A-Za-z_-]+),?")
 )
 
 type specHandler struct {
@@ -143,9 +163,8 @@ func (d *specHandler) getVal(r *regexp.Regexp, str string) (bool, string) {
 
 func (d *specHandler) DefaultSpec() *api.VolumeSpec {
 	return &api.VolumeSpec{
-		VolumeLabels: make(map[string]string),
-		Format:       api.FSType_FS_TYPE_EXT4,
-		HaLevel:      1,
+		Format:  api.FSType_FS_TYPE_EXT4,
+		HaLevel: 1,
 	}
 }
 
@@ -205,7 +224,7 @@ func (d *specHandler) UpdateSpecFromOpts(opts map[string]string, spec *api.Volum
 				spec.BlockSize = blockSize
 			}
 		case api.SpecQueueDepth:
-			if queueDepth, err := units.Parse(v); err != nil {
+			if queueDepth, err := strconv.ParseInt(v, 10, 64); err != nil {
 				return nil, nil, nil, err
 			} else {
 				spec.QueueDepth = uint32(queueDepth)
@@ -312,16 +331,48 @@ func (d *specHandler) UpdateSpecFromOpts(opts map[string]string, spec *api.Volum
 			} else {
 				spec.IoProfile = ioProfile
 			}
+		case api.SpecEarlyAck:
+			if earlyAck, err := strconv.ParseBool(v); err != nil {
+				return nil, nil, nil, err
+			} else {
+				if spec.IoStrategy == nil {
+					spec.IoStrategy = &api.IoStrategy{}
+				}
+				spec.IoStrategy.EarlyAck = earlyAck
+			}
+		case api.SpecAsyncIo:
+			if asyncIo, err := strconv.ParseBool(v); err != nil {
+				return nil, nil, nil, err
+			} else {
+				if spec.IoStrategy == nil {
+					spec.IoStrategy = &api.IoStrategy{}
+				}
+				spec.IoStrategy.AsyncIo = asyncIo
+			}
 		case api.SpecForceUnsupportedFsType:
 			if forceFs, err := strconv.ParseBool(v); err != nil {
 				return nil, nil, nil, err
 			} else {
 				spec.ForceUnsupportedFsType = forceFs
 			}
+		case api.SpecNodiscard:
+			if nodiscard, err := strconv.ParseBool(v); err != nil {
+				return nil, nil, nil, err
+			} else {
+				spec.Nodiscard = nodiscard
+			}
+		case api.Token:
+			// skip, if not it would be added to the labels
+		case api.StoragePolicy:
+			spec.StoragePolicy = v
 		default:
-			spec.VolumeLabels[k] = v
+			locator.VolumeLabels[k] = v
 		}
 	}
+
+	// Copy any spec labels to the locator
+	locator = locator.MergeVolumeSpecLabels(spec)
+
 	return spec, locator, source, nil
 }
 
@@ -335,6 +386,22 @@ func (d *specHandler) SpecFromOpts(
 
 	spec := d.DefaultSpec()
 	return d.UpdateSpecFromOpts(opts, spec, locator, source)
+}
+
+func (d *specHandler) GetTokenFromString(str string) (string, bool) {
+	ok, token := d.getVal(tokenRegex, str)
+	return token, ok
+}
+
+func (d *specHandler) GetTokenSecretFromString(str string) (string, bool) {
+	submatches := tokenSecretRegex.FindStringSubmatch(str)
+	if len(submatches) < 2 {
+		return "", false
+	}
+	secret := submatches[1]
+	secret = strings.TrimRight(secret, "/")
+
+	return secret, true
 }
 
 func (d *specHandler) SpecOptsFromString(
@@ -420,8 +487,20 @@ func (d *specHandler) SpecOptsFromString(
 	if ok, ioProfile := d.getVal(ioProfileRegex, str); ok {
 		opts[api.SpecIoProfile] = ioProfile
 	}
+	if ok, asyncIo := d.getVal(asyncIoRegex, str); ok {
+		opts[api.SpecAsyncIo] = asyncIo
+	}
+	if ok, earlyAck := d.getVal(earlyAckRegex, str); ok {
+		opts[api.SpecEarlyAck] = earlyAck
+	}
 	if ok, forceUnsupportedFsType := d.getVal(forceUnsupportedFsTypeRegex, str); ok {
 		opts[api.SpecForceUnsupportedFsType] = forceUnsupportedFsType
+	}
+	if ok, nodiscard := d.getVal(nodiscardRegex, str); ok {
+		opts[api.SpecNodiscard] = nodiscard
+	}
+	if ok, storagepolicy := d.getVal(storagePolicyRegex, str); ok {
+		opts[api.StoragePolicy] = storagepolicy
 	}
 
 	return true, opts, name

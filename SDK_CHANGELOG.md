@@ -1,9 +1,187 @@
 # Changelog
 
-> NOTE: The SDK is still in tech preview. Once officially released, this changelog will also
-> use the SDK version numbers.
-
 ## Releases
+
+### v0.55.0 - Tech Preview (5/7/2019)
+
+* Additions to cloudbackup enumerate filters.
+
+### v0.54.0 - Tech Preview (5/2/2019)
+
+* Added new field FullBackupFrequency to cloudbackup create API
+
+### v0.53.0 - Tech Preview (4/23/2019)
+
+* Added new field RetentionDays to cloudbackup schedule
+
+### v0.52.0 - Tech Preview (4/23/2019)
+
+* (breaking change) Fix REST Gateway Snapshot enumerate with filters endpoint
+
+### v0.51.0 - Tech Preview (4/11/2019)
+
+* Added VolumeInspectOptions to OpenStorageVolume.Inspect
+* Added new OpenStorageVolume.InspectWithFilters API
+
+### v0.50.0 - Tech Preview (4/2/2019)
+
+* Add groupId field to SdkCloudBackupStatus structure
+
+### v0.49.0 - Tech Preview (4/3/2019)
+
+* Add Group to VolumeLocator
+
+### v0.48.0 - Tech Preview (4/2/2019)
+
+* Add cluster pair Mode option in CreatePair and ProcessPair requests
+
+### v0.47.0 - Tech Preview (3/26/2019)
+
+* Change io_strategy type from oneof to pointer
+
+### v0.46.0 - Tech Preview (3/26/2019)
+
+* Handle spec update for nodiscard, io_strategy
+
+### v0.45.0 - Tech Preview (3/13/2019)
+
+* Add new APIs for managing OpenStorage ClusterDomains
+
+### v0.44.0 - Tech Preview (3/21/2019)
+
+* Add ownership support to OpenStorageStoragePolicy
+
+### v0.43.0 - Tech Preview (3/12/2019)
+
+* Add ownership support to OpenStorageCredential service APIs
+
+### v0.42.0 - Tech Preview (2/20/2019)
+
+* SnapEnumerate REST endpoint now accepts empty volume ids
+
+### v0.41.0 - Tech Preview (2/20/2019)
+
+* Add driver options to RPCs in the MountAttach service
+
+### v0.40.0 - Tech Preview (2/19/2019)
+
+* Storage policy support
+* Allow Enforce/Release of storage policy
+
+### v0.39.0 - Tech Preview (1/29/2019)
+
+* Additional fields to cloud-backup data structure to track group cloud backups.
+
+### v0.38.0 - Tech Preview (1/27/2019)
+
+* Ownership reworked to gain access type control. Now it supports Read, Write,
+  and Admin access types.
+
+### v0.37.0 - Tech Preview (1/16/2019)
+
+* Ownership support in the VolumeSpec
+
+### v0.36.0 - Tech Preview (1/7/2019)
+
+* Refactor confusing labels.
+    * Deprecated Volume.Spec.VolumeLabels.
+    * Any labels in Volume.Spec.VolumeLabels will be copied to Volume.Locator
+    * Added Labels to Volume.Create
+    * Volume.Update now takes Labels and Name instead of VolumeLocator
+    * Volume.Inspect now also returns Name and Labels to match Volume.Create
+
+### v0.35.0 - Tech Preview (1/4/2019)
+
+* Rename SdkVolumeAttachRequest_Options to SdkVolumeAttachOptions
+* Rename SdkVolumeUnmount_Options to SdkVolumeUnmountOptions
+* Rename SdkVolumeDetach_Options to SdkVolumeDetachOptions
+* Change SdkVolumeMountRequest to include SdkVolumeAttachOptions
+
+### v0.34.0 - Tech Preview (1/2/2019)
+
+* Role support
+* Added Cluster Pair and Migrate to Capabilites since they were missing
+
+### v0.33.0 - Tech Preview (12/05/2018)
+
+* Add TaskId and ClusterId to CloudMigrate status request
+
+### v0.32.0 - Tech Preview (11/28/2018)
+
+* Removing unused objects created for cluster pair APIs
+
+### v0.31.0 - Tech Preview (11/27/2018)
+
+* (breaking change) REST API for Sdk OpenStorageAlerts has changed
+* (breaking change) OpenStorageAlerts.Enumerate is now EnumerateWithFilters
+
+### v0.30.0 - Tech Preview (11/20/2018)
+
+* SDK Alerts enumerate chunking bug resolution.
+
+### v0.29.0 - Tech Preview (11/17/2018)
+
+* SDK Alerts enumerate is now a server side streaming api.
+
+### v0.28.0 - Tech Preview (11/15/2018)
+
+* (breaking change) Restructured all SDK REST routes
+* (breaking change) Reworded OpenStorageCloudBackup.Enumerate to EnumerateWithFilters
+
+### v0.27.0 - Tech Preview (11/8/2018)
+
+* Add new API for extracting volume capacity usage details.
+
+### v0.26.0 - Tech Preview (11/14/2018)
+
+* Extend attribute of StorageResource to be marked as a cache.
+
+### v0.25.0 - Tech Preview (11/13/2018)
+
+* Added labels field to cloud backup create message
+
+### v0.24.0 - Tech Preview (11/12/2018)
+
+* Added ETA fields to cloud backup and cloud migrate status messages
+
+### v0.23.0 - Tech Preview (11/2/2018)
+
+* Cloud migrate status and cloud backup status now report
+  total bytes to be transferred and bytes already transferred.
+* These status blocks also report the start time of the operation
+  so that client could calculate progress of the operation.
+
+### v0.22.0 - Tech Preview (11/1/2018)
+
+* Rename the field "name" to "TaskId" in sdkCloudBackupcreate/restore/status
+  structures.
+
+### v0.21.0 - Tech Preview (10/31/2018)
+
+* Addition of ClusterPairing and VolumeMigrate services
+
+### v0.20.0 - Tech Preview (11/1/2018)
+
+* Added ETA for cloud snap status.
+
+### v0.19.0 - Tech Preview (10/23/2018)
+
+* CloudBackupStatus now returns CredentialUUID used for cloud for the
+  backup/restore op under consideration.
+
+### v0.18.0 - Tech Preview (10/23/2018)
+
+* Following CloudBackup APIs have been refactored to include task id rather
+  than source volume id.
+* CloudBackupCreate now returns task id.
+* CloudBackupRestore too returns task id along with restore volume id.
+* CloudBackupStatusRequest can take task id as an optional parameter.
+* Map key for CloudBackupStatusResponse is task id rather than source volume id.
+* CloudBackupStateChange takes in taskid rather than source volume id.
+
+### v0.17.0 - Tech Preview (10/21/2018)
+
+* Added IoStrategy - ability to specify I/O characteristics.
 
 ### v0.16.0 - Tech Preview (10/15/2018)
 

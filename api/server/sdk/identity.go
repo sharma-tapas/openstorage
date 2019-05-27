@@ -28,7 +28,11 @@ import (
 
 // IdentityServer is an implementation of the gRPC OpenStorageIdentityServer interface
 type IdentityServer struct {
-	driver volume.VolumeDriver
+	server serverAccessor
+}
+
+func (s *IdentityServer) driver(ctx context.Context) volume.VolumeDriver {
+	return s.server.driver(ctx)
 }
 
 // Capabilities returns the capabilities of the SDK server
@@ -100,7 +104,34 @@ func (s *IdentityServer) Capabilities(
 			},
 		},
 	}
-
+	capRole := &api.SdkServiceCapability{
+		Type: &api.SdkServiceCapability_Service{
+			Service: &api.SdkServiceCapability_OpenStorageService{
+				Type: api.SdkServiceCapability_OpenStorageService_ROLE,
+			},
+		},
+	}
+	capClusterPair := &api.SdkServiceCapability{
+		Type: &api.SdkServiceCapability_Service{
+			Service: &api.SdkServiceCapability_OpenStorageService{
+				Type: api.SdkServiceCapability_OpenStorageService_CLUSTER_PAIR,
+			},
+		},
+	}
+	capMigrate := &api.SdkServiceCapability{
+		Type: &api.SdkServiceCapability_Service{
+			Service: &api.SdkServiceCapability_OpenStorageService{
+				Type: api.SdkServiceCapability_OpenStorageService_MIGRATE,
+			},
+		},
+	}
+	capStoragePolicy := &api.SdkServiceCapability{
+		Type: &api.SdkServiceCapability_Service{
+			Service: &api.SdkServiceCapability_OpenStorageService{
+				Type: api.SdkServiceCapability_OpenStorageService_STORAGE_POLICY,
+			},
+		},
+	}
 	return &api.SdkIdentityCapabilitiesResponse{
 		Capabilities: []*api.SdkServiceCapability{
 			capCluster,
@@ -112,6 +143,10 @@ func (s *IdentityServer) Capabilities(
 			capVolume,
 			capAlerts,
 			capMountAttach,
+			capRole,
+			capClusterPair,
+			capMigrate,
+			capStoragePolicy,
 		},
 	}, nil
 }
@@ -122,12 +157,22 @@ func (s *IdentityServer) Version(
 	req *api.SdkIdentityVersionRequest,
 ) (*api.SdkIdentityVersionResponse, error) {
 
-	version, err := s.driver.Version()
-	if err != nil {
-		return nil, status.Errorf(
-			codes.Internal,
-			"Failed to get version information: %v", err,
-		)
+	var (
+		version *api.StorageVersion
+		err     error
+	)
+	if s.driver(ctx) == nil {
+		version = &api.StorageVersion{
+			Driver: "no driver running",
+		}
+	} else {
+		version, err = s.driver(ctx).Version()
+		if err != nil {
+			return nil, status.Errorf(
+				codes.Internal,
+				"Failed to get version information: %v", err,
+			)
+		}
 	}
 
 	sdkVersion := &api.SdkVersion{

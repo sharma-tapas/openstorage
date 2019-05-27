@@ -18,14 +18,18 @@ limitations under the License.
 package sdk
 
 import (
+	"context"
+	"fmt"
+	"os"
 	"time"
 
-	"github.com/libopenstorage/openstorage/pkg/sched"
-
 	"github.com/libopenstorage/openstorage/api"
+	"github.com/libopenstorage/openstorage/pkg/sched"
+	"github.com/libopenstorage/openstorage/volume"
+
+	"github.com/portworx/kvdb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
 	"gopkg.in/yaml.v2"
 )
 
@@ -83,10 +87,6 @@ func timeWeekdayToSdkWeekly(t time.Weekday) api.SdkTimeWeekday {
 func sdkSchedToRetainInternalSpec(
 	req *api.SdkSchedulePolicyInterval,
 ) (*sched.RetainIntervalSpec, error) {
-
-	if req.GetRetain() < 1 {
-		return nil, status.Error(codes.InvalidArgument, "Must retain more than 0")
-	}
 
 	// Translate sdk schedule to yaml RetainIntervalSpec string.
 	var spec sched.IntervalSpec
@@ -230,4 +230,38 @@ func retainInternalSpecYamlByteToSdkSched(
 		}
 	}
 	return scheds, nil
+}
+
+func openLog(logfile string) (*os.File, error) {
+	file, err := os.OpenFile(logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		return nil, fmt.Errorf("Unable to open logfile %s: %v", logfile, err)
+	}
+	return file, nil
+}
+
+func checkAccessFromDriverForVolumeId(
+	ctx context.Context,
+	d volume.VolumeDriver,
+	volumeId string,
+	accessType api.Ownership_AccessType,
+) error {
+	vols, err := d.Inspect([]string{volumeId})
+	if err == kvdb.ErrNotFound || (err == nil && len(vols) == 0) {
+		return status.Errorf(
+			codes.NotFound,
+			"Volume id %s not found",
+			volumeId)
+	} else if err != nil {
+		return status.Errorf(
+			codes.Internal,
+			"Failed to find volume %s: %v",
+			volumeId, err)
+	}
+
+	if !vols[0].IsPermitted(ctx, accessType) {
+		return status.Errorf(codes.PermissionDenied, "Access denied to volume %s", volumeId)
+	}
+
+	return nil
 }

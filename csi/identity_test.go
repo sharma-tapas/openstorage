@@ -19,7 +19,7 @@ package csi
 import (
 	"testing"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi/v0"
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 )
@@ -43,7 +43,7 @@ func TestNewCSIServerGetPluginInfo(t *testing.T) {
 	// Verify
 	name := r.GetName()
 	version := r.GetVendorVersion()
-	assert.Equal(t, name, csiDriverNamePrefix+"mock")
+	assert.Equal(t, name, "mock.openstorage.org")
 	assert.Equal(t, version, csiDriverVersion)
 
 	manifest := r.GetManifest()

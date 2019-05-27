@@ -84,6 +84,96 @@ func TestQueueDepth(t *testing.T) {
 	testSpecOptString(t, api.SpecQueueDepth, "10")
 }
 
+func TestNodiscard(t *testing.T) {
+	testSpecOptString(t, api.SpecNodiscard, "true")
+
+	spec := testSpecFromString(t, api.SpecNodiscard, "true")
+	require.True(t, spec.Nodiscard, "failed to parse nodiscard option into spec")
+
+	spec = testSpecFromString(t, api.SpecNodiscard, "false")
+	require.False(t, spec.Nodiscard, "failed to parse nodiscard option into spec")
+}
+
+func TestEarlyAck(t *testing.T) {
+	s := NewSpecHandler()
+	spec, _, _, err := s.SpecFromOpts(map[string]string{
+		api.SpecEarlyAck: "true",
+	})
+
+	require.NoError(t, err)
+	ioStrategy := spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.True(t, ioStrategy.EarlyAck)
+
+	spec, _, _, err = s.SpecFromOpts(map[string]string{
+		api.SpecEarlyAck: "false",
+	})
+	require.NoError(t, err)
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.False(t, ioStrategy.EarlyAck)
+
+	spec, _, _, err = s.SpecFromOpts(map[string]string{})
+	require.Nil(t, spec.GetIoStrategy())
+	require.NoError(t, err)
+
+	_, _, _, err = s.SpecFromOpts(map[string]string{
+		api.SpecAsyncIo: "blah",
+	})
+	require.Error(t, err)
+	require.Nil(t, spec.GetIoStrategy())
+
+	spec = testSpecFromString(t, api.SpecAsyncIo, "true")
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.True(t, ioStrategy.AsyncIo)
+
+	spec = testSpecFromString(t, api.SpecAsyncIo, "false")
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.False(t, ioStrategy.AsyncIo)
+}
+
+func TestAsyncIo(t *testing.T) {
+	s := NewSpecHandler()
+	spec, _, _, err := s.SpecFromOpts(map[string]string{
+		api.SpecAsyncIo: "true",
+	})
+
+	require.NoError(t, err)
+	ioStrategy := spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.True(t, ioStrategy.AsyncIo)
+
+	spec, _, _, err = s.SpecFromOpts(map[string]string{
+		api.SpecAsyncIo: "false",
+	})
+	require.NoError(t, err)
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.False(t, ioStrategy.AsyncIo)
+
+	spec, _, _, err = s.SpecFromOpts(map[string]string{})
+	require.NoError(t, err)
+	require.Nil(t, spec.GetIoStrategy())
+
+	_, _, _, err = s.SpecFromOpts(map[string]string{
+		api.SpecAsyncIo: "blah",
+	})
+	require.Error(t, err)
+	require.Nil(t, spec.GetIoStrategy())
+
+	spec = testSpecFromString(t, api.SpecAsyncIo, "true")
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.True(t, ioStrategy.AsyncIo)
+
+	spec = testSpecFromString(t, api.SpecAsyncIo, "false")
+	ioStrategy = spec.GetIoStrategy()
+	require.NotNil(t, ioStrategy)
+	require.False(t, ioStrategy.AsyncIo)
+}
+
 func TestForceUnsupportedFsType(t *testing.T) {
 	s := NewSpecHandler()
 	spec, _, _, err := s.SpecFromOpts(map[string]string{
@@ -116,4 +206,71 @@ func TestForceUnsupportedFsType(t *testing.T) {
 	// Test that it is false when not present
 	spec = testSpecFromString(t, api.SpecRack, "ignore")
 	require.False(t, spec.ForceUnsupportedFsType)
+}
+
+func TestCopyingLabelsFromSpecToLocator(t *testing.T) {
+	s := NewSpecHandler()
+	opts := map[string]string{
+		"hello": "world",
+	}
+	spec := &api.VolumeSpec{
+		VolumeLabels: map[string]string{
+			"goodbye": "fornow",
+		},
+	}
+	_, locator, _, err := s.UpdateSpecFromOpts(opts, spec, nil, nil)
+	require.NoError(t, err)
+	require.Contains(t, locator.VolumeLabels, "hello")
+	require.Contains(t, locator.VolumeLabels, "goodbye")
+}
+
+func TestGetTokenFromString(t *testing.T) {
+	s := NewSpecHandler()
+
+	token := "abcd.xyz.123"
+
+	tokenParsed, ok := s.GetTokenFromString(fmt.Sprintf("token=%s", token))
+	require.Equal(t, token, tokenParsed)
+	require.Equal(t, ok, true)
+
+	tokenParsed, ok = s.GetTokenFromString(fmt.Sprintf("toabcbn=%s", token))
+	require.Equal(t, "", tokenParsed)
+	require.Equal(t, ok, false)
+
+}
+
+func TestGetTokenSecretFromString(t *testing.T) {
+	s := NewSpecHandler()
+
+	tt := []struct {
+		InputSecret    string
+		ExpectedSecret string
+		Successful     bool
+	}{
+		{
+			"/px/secrets/alpha/token1",
+			"px/secrets/alpha/token1",
+			true,
+		}, {
+			"abcd/secrets/alpha//token1/",
+			"abcd/secrets/alpha//token1",
+			true,
+		}, {
+			"simplekey",
+			"simplekey",
+			true,
+		},
+	}
+
+	for _, tc := range tt {
+		str := "name=abcd,token_secret=" + tc.InputSecret + ",token="
+		secretParsed, ok := s.GetTokenSecretFromString(str)
+		require.Equal(t, tc.ExpectedSecret, secretParsed)
+		require.Equal(t, ok, tc.Successful)
+	}
+
+	secretParsed, ok := s.GetTokenSecretFromString(fmt.Sprintf("toabcbn_secret=abcd"))
+	require.Equal(t, "", secretParsed)
+	require.Equal(t, ok, false)
+
 }

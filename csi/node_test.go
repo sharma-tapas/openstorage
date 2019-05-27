@@ -18,75 +18,19 @@ package csi
 
 import (
 	"fmt"
+	"os"
 	"testing"
+	"time"
 
-	csi "github.com/container-storage-interface/spec/lib/go/csi/v0"
+	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/mock/gomock"
 	"github.com/libopenstorage/openstorage/api"
+	authsecrets "github.com/libopenstorage/openstorage/pkg/auth/secrets"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-func TestNewCSIServerGetNodeId(t *testing.T) {
-
-	// Create server and client connection
-	s := newTestServer(t)
-	defer s.Stop()
-
-	// Make a call
-	c := csi.NewNodeClient(s.Conn())
-
-	s.MockCluster().
-		EXPECT().
-		Enumerate().
-		Return(api.Cluster{
-			Status: api.Status_STATUS_OK,
-			Id:     "pwx-testcluster",
-			NodeId: "pwx-testnodeid",
-		}, nil).
-		Times(1)
-
-	// Setup request
-	req := &csi.NodeGetIdRequest{}
-
-	r, err := c.NodeGetId(context.Background(), req)
-	assert.Nil(t, err)
-	assert.NotNil(t, r)
-
-	// Verify
-	nodeid := r.GetNodeId()
-	assert.Equal(t, nodeid, "pwx-testnodeid")
-}
-
-func TestNewCSIServerGetNodeIdEnumerateError(t *testing.T) {
-
-	// Create server and client connection
-	s := newTestServer(t)
-	defer s.Stop()
-
-	// Make a call
-	c := csi.NewNodeClient(s.Conn())
-
-	s.MockCluster().
-		EXPECT().
-		Enumerate().
-		Return(api.Cluster{}, fmt.Errorf("TEST")).
-		Times(1)
-
-	// Setup request
-	req := &csi.NodeGetIdRequest{}
-
-	// Expect error without version
-	_, err := c.NodeGetId(context.Background(), req)
-
-	assert.NotNil(t, err)
-	serverError, ok := status.FromError(err)
-	assert.True(t, ok)
-	assert.Equal(t, serverError.Code(), codes.Internal)
-	assert.Contains(t, serverError.Message(), "TEST")
-}
 
 func TestNodePublishVolumeBadArguments(t *testing.T) {
 	// Create server and client connection
@@ -147,33 +91,36 @@ func TestNodePublishVolumeVolumeNotFound(t *testing.T) {
 
 	name := "myvol"
 	gomock.InOrder(
+		s.MockDriver().
+			EXPECT().
+			Type().
+			Return(api.DriverType_DRIVER_TYPE_NONE).
+			Times(1),
+
 		// Getting volume information
 		s.MockDriver().
 			EXPECT().
-			Inspect([]string{name}).
-			Return(nil, fmt.Errorf("not found")).
-			Times(1),
-
-		s.MockDriver().
-			EXPECT().
-			Enumerate(&api.VolumeLocator{Name: name}, nil).
-			Return(nil, fmt.Errorf("not found")).
+			Enumerate(&api.VolumeLocator{
+				VolumeIds: []string{name},
+			}, nil).
+			Return([]*api.Volume{}, nil).
 			Times(1),
 	)
 
 	req := &csi.NodePublishVolumeRequest{
 		VolumeId:   name,
-		TargetPath: "mypath",
+		TargetPath: "/",
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{},
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
 	_, err := c.NodePublishVolume(context.Background(), req)
 	assert.NotNil(t, err)
 	serverError, ok := status.FromError(err)
 	assert.True(t, ok)
-	assert.Equal(t, serverError.Code(), codes.NotFound)
+	assert.Equal(t, codes.NotFound, serverError.Code())
 	assert.Contains(t, serverError.Message(), "not found")
 }
 
@@ -186,21 +133,10 @@ func TestNodePublishVolumeBadAttribute(t *testing.T) {
 	c := csi.NewNodeClient(s.Conn())
 
 	name := "myvol"
-	size := uint64(10)
 	s.MockDriver().
 		EXPECT().
-		Inspect([]string{name}).
-		Return([]*api.Volume{
-			&api.Volume{
-				Id: name,
-				Locator: &api.VolumeLocator{
-					Name: name,
-				},
-				Spec: &api.VolumeSpec{
-					Size: size,
-				},
-			},
-		}, nil).
+		Type().
+		Return(api.DriverType_DRIVER_TYPE_BLOCK).
 		Times(1)
 
 	req := &csi.NodePublishVolumeRequest{
@@ -211,9 +147,10 @@ func TestNodePublishVolumeBadAttribute(t *testing.T) {
 		},
 
 		// This will cause an error
-		VolumeAttributes: map[string]string{
+		VolumeContext: map[string]string{
 			api.SpecFilesystem: "whatkindoffsisthis?",
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
 	_, err := c.NodePublishVolume(context.Background(), req)
@@ -247,19 +184,18 @@ func TestNodePublishVolumeInvalidTargetLocation(t *testing.T) {
 	name := "myvol"
 	s.MockDriver().
 		EXPECT().
-		Inspect([]string{name}).
-		Return([]*api.Volume{
-			&api.Volume{
-				Id: name,
-			},
-		}, nil).
+		Type().
+		Return(api.DriverType_DRIVER_TYPE_NONE).
 		Times(len(testargs))
-
 	req := &csi.NodePublishVolumeRequest{
 		VolumeId: name,
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{},
+			AccessType: &csi.VolumeCapability_Mount{
+				Mount: &csi.VolumeCapability_MountVolume{},
+			},
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
 	for _, testarg := range testargs {
@@ -286,7 +222,15 @@ func TestNodePublishVolumeFailedToAttach(t *testing.T) {
 	gomock.InOrder(
 		s.MockDriver().
 			EXPECT().
-			Inspect([]string{name}).
+			Type().
+			Return(api.DriverType_DRIVER_TYPE_BLOCK).
+			Times(1),
+
+		s.MockDriver().
+			EXPECT().
+			Enumerate(&api.VolumeLocator{
+				VolumeIds: []string{name},
+			}, nil).
 			Return([]*api.Volume{
 				&api.Volume{
 					Id: name,
@@ -299,15 +243,11 @@ func TestNodePublishVolumeFailedToAttach(t *testing.T) {
 				},
 			}, nil).
 			Times(1),
-		s.MockDriver().
-			EXPECT().
-			Type().
-			Return(api.DriverType_DRIVER_TYPE_BLOCK).
-			Times(1),
+
 		s.MockDriver().
 			EXPECT().
 			Attach(name, gomock.Any()).
-			Return("", fmt.Errorf("TEST")).
+			Return("", fmt.Errorf("Unable to attach volume")).
 			Times(1),
 	)
 
@@ -317,6 +257,7 @@ func TestNodePublishVolumeFailedToAttach(t *testing.T) {
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{},
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
 	_, err := c.NodePublishVolume(context.Background(), req)
@@ -325,7 +266,6 @@ func TestNodePublishVolumeFailedToAttach(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, serverError.Code(), codes.Internal)
 	assert.Contains(t, serverError.Message(), "Unable to attach volume")
-	assert.Contains(t, serverError.Message(), "TEST")
 }
 
 func TestNodePublishVolumeFailedMount(t *testing.T) {
@@ -342,6 +282,85 @@ func TestNodePublishVolumeFailedMount(t *testing.T) {
 	gomock.InOrder(
 		s.MockDriver().
 			EXPECT().
+			Type().
+			Return(api.DriverType_DRIVER_TYPE_NONE).
+			Times(1),
+		s.MockDriver().
+			EXPECT().
+			Enumerate(&api.VolumeLocator{
+				VolumeIds: []string{name},
+			}, nil).
+			Return([]*api.Volume{
+				&api.Volume{
+					Id: name,
+					Locator: &api.VolumeLocator{
+						Name: name,
+					},
+					Spec: &api.VolumeSpec{
+						Size: size,
+					},
+				},
+			}, nil).
+			Times(1),
+		s.MockDriver().
+			EXPECT().
+			Mount(name, targetPath, nil).
+			Return(fmt.Errorf("Unable to mount volume")).
+			Times(1),
+	)
+
+	req := &csi.NodePublishVolumeRequest{
+		VolumeId:   name,
+		TargetPath: targetPath,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessMode: &csi.VolumeCapability_AccessMode{},
+		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
+	}
+
+	_, err := c.NodePublishVolume(context.Background(), req)
+	assert.NotNil(t, err)
+	serverError, ok := status.FromError(err)
+	assert.True(t, ok)
+	assert.Equal(t, serverError.Code(), codes.Internal)
+	assert.Contains(t, serverError.Message(), "Unable to mount volume")
+}
+
+func TestNodePublishVolumeBlock(t *testing.T) {
+	// Skipping for now - issues with symlink
+	t.Skip()
+
+	// Create server and client connection
+	s := newTestServer(t)
+	defer s.Stop()
+
+	// Make a call
+	c := csi.NewNodeClient(s.Conn())
+
+	name := "myvol"
+	size := uint64(10)
+
+	// create devicepath/targetpath
+	devicePath := fmt.Sprintf("/tmp/csi-devicePath.%d", time.Now().Unix())
+	targetPath := fmt.Sprintf("/tmp/csi-targetPath.%d", time.Now().Unix())
+
+	// Create the devicePath
+	f, err := os.Create(devicePath)
+	assert.NoError(t, err)
+	f.Close()
+
+	// cleanup devicepath and targetpath
+	defer os.Remove(devicePath)
+	defer os.Remove(targetPath)
+
+	gomock.InOrder(
+		s.MockDriver().
+			EXPECT().
+			Type().
+			Return(api.DriverType_DRIVER_TYPE_BLOCK).
+			Times(1),
+		s.MockDriver().
+			EXPECT().
 			Inspect([]string{name}).
 			Return([]*api.Volume{
 				&api.Volume{
@@ -363,17 +382,7 @@ func TestNodePublishVolumeFailedMount(t *testing.T) {
 		s.MockDriver().
 			EXPECT().
 			Attach(name, gomock.Any()).
-			Return("", nil).
-			Times(1),
-		s.MockDriver().
-			EXPECT().
-			Mount(name, targetPath, nil).
-			Return(fmt.Errorf("MOUNT ERROR")).
-			Times(1),
-		s.MockDriver().
-			EXPECT().
-			Detach(name, gomock.Any()).
-			Return(nil).
+			Return(devicePath, nil).
 			Times(1),
 	)
 
@@ -382,16 +391,21 @@ func TestNodePublishVolumeFailedMount(t *testing.T) {
 		TargetPath: targetPath,
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{},
+			AccessType: &csi.VolumeCapability_Block{
+				Block: &csi.VolumeCapability_BlockVolume{},
+			},
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
-	_, err := c.NodePublishVolume(context.Background(), req)
-	assert.NotNil(t, err)
-	serverError, ok := status.FromError(err)
-	assert.True(t, ok)
-	assert.Equal(t, serverError.Code(), codes.Internal)
-	assert.Contains(t, serverError.Message(), "Unable to mount volume")
-	assert.Contains(t, serverError.Message(), "MOUNT ERROR")
+	r, err := c.NodePublishVolume(context.Background(), req)
+	assert.Nil(t, err)
+	assert.NotNil(t, r)
+
+	// Check that the symlink was created
+	fileInfo, err := os.Lstat(targetPath)
+	assert.NoError(t, err)
+	assert.Equal(t, fileInfo.Mode()&os.ModeSymlink, os.ModeSymlink)
 }
 
 func TestNodePublishVolumeMount(t *testing.T) {
@@ -408,7 +422,14 @@ func TestNodePublishVolumeMount(t *testing.T) {
 	gomock.InOrder(
 		s.MockDriver().
 			EXPECT().
-			Inspect([]string{name}).
+			Type().
+			Return(api.DriverType_DRIVER_TYPE_NONE).
+			Times(1),
+		s.MockDriver().
+			EXPECT().
+			Enumerate(&api.VolumeLocator{
+				VolumeIds: []string{name},
+			}, nil).
 			Return([]*api.Volume{
 				&api.Volume{
 					Id: name,
@@ -421,16 +442,7 @@ func TestNodePublishVolumeMount(t *testing.T) {
 				},
 			}, nil).
 			Times(1),
-		s.MockDriver().
-			EXPECT().
-			Type().
-			Return(api.DriverType_DRIVER_TYPE_BLOCK).
-			Times(1),
-		s.MockDriver().
-			EXPECT().
-			Attach(name, gomock.Any()).
-			Return("", nil).
-			Times(1),
+
 		s.MockDriver().
 			EXPECT().
 			Mount(name, targetPath, nil).
@@ -444,6 +456,7 @@ func TestNodePublishVolumeMount(t *testing.T) {
 		VolumeCapability: &csi.VolumeCapability{
 			AccessMode: &csi.VolumeCapability_AccessMode{},
 		},
+		Secrets: map[string]string{authsecrets.SecretTokenKey: systemUserToken},
 	}
 
 	r, err := c.NodePublishVolume(context.Background(), req)
@@ -497,10 +510,6 @@ func TestNodeUnpublishVolumeInvalidTargetLocation(t *testing.T) {
 		expectedErrorContains string
 		targetPath            string
 	}{
-		{
-			expectedErrorContains: "does not exist",
-			targetPath:            "////a/sdf//fd/asdf/as/f/asdfasf/fds",
-		},
 		{
 			expectedErrorContains: "not a directory",
 			targetPath:            "/etc/hosts",
